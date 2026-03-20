@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -39,6 +40,10 @@ function parseOptionalString(value) {
 
   const normalized = String(value).trim();
   return normalized || null;
+}
+
+function normalizeServiceTier(value) {
+  return String(value || "").trim().toLowerCase() === "fast" ? "fast" : "flex";
 }
 
 function readJsonFile(filePath, fallback) {
@@ -113,16 +118,59 @@ function loadAvailableModels() {
   ];
 }
 
-function loadCodexVersion() {
+function resolveCodexVersionCommand(command) {
+  if (process.platform !== "win32") {
+    return {
+      command,
+      args: ["--version"],
+    };
+  }
+
+  const baseName = path.basename(command).toLowerCase();
+  const resolved = baseName === "codex" || baseName === "codex.ps1" ? "codex.cmd" : command;
+  return {
+    command: "cmd.exe",
+    args: ["/d", "/s", "/c", resolved, "--version"],
+  };
+}
+
+function parseCodexVersion(output) {
+  const match = String(output || "").match(/(\d+\.\d+\.\d+)/);
+  return match ? match[1] : null;
+}
+
+function loadCodexVersion(codexCommand) {
+  try {
+    const invocation = resolveCodexVersionCommand(codexCommand || "codex");
+    const output = execFileSync(invocation.command, invocation.args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
+    });
+    const parsed = parseCodexVersion(output);
+    if (parsed) {
+      return parsed;
+    }
+  } catch {
+    // Fall back to the cached version file when invoking Codex directly fails.
+  }
+
   const versionPath = path.join(codexHome, "version.json");
   const versionInfo = readJsonFile(versionPath, {});
   return versionInfo.latest_version || "unknown";
+}
+
+function loadAppVersion() {
+  const packageJsonPath = path.join(projectRoot, "package.json");
+  const packageJson = readJsonFile(packageJsonPath, {});
+  return packageJson.version || "unknown";
 }
 
 export function loadConfig() {
   const dataDir = path.resolve(projectRoot, process.env.DATA_DIR || "data");
   const uiDir = path.resolve(projectRoot, "ui");
   const uploadsDir = path.join(dataDir, "uploads");
+  const logsDir = path.join(dataDir, "logs");
   const codexWorkdir = path.resolve(
     process.env.CODEX_WORKDIR || path.join(os.homedir(), "Desktop", "codex"),
   );
@@ -137,9 +185,9 @@ export function loadConfig() {
     readCodexConfigValue("model_reasoning_effort") ||
     "medium";
   const defaultServiceTier =
-    process.env.CODEX_SERVICE_TIER ||
-    readCodexConfigValue("service_tier") ||
-    "auto";
+    normalizeServiceTier(
+      process.env.CODEX_SERVICE_TIER || readCodexConfigValue("service_tier") || "flex",
+    );
   const defaultProfile = process.env.CODEX_PROFILE || "default";
   const discordAllowedGuildIds = parseIdList(process.env.DISCORD_ALLOWED_GUILD_IDS);
   const fileWatchEnabled = parseBoolean(process.env.FILE_WATCH_ENABLED, false);
@@ -175,6 +223,7 @@ export function loadConfig() {
 
   fs.mkdirSync(dataDir, { recursive: true });
   fs.mkdirSync(uploadsDir, { recursive: true });
+  fs.mkdirSync(logsDir, { recursive: true });
 
   return {
     host: process.env.HOST || "127.0.0.1",
@@ -192,7 +241,11 @@ export function loadConfig() {
       process.env.CODEX_BYPASS_APPROVALS_AND_SANDBOX,
       true,
     ),
-    codexVersion: loadCodexVersion(),
+    codexDeveloperMode: parseBoolean(process.env.CODEX_DEVELOPER_MODE, false),
+    codexDeveloperLogPath: path.join(logsDir, "codex-live.log"),
+    codexDeveloperConsoleLogPath: path.join(logsDir, "codex-console.log"),
+    appVersion: loadAppVersion(),
+    codexVersion: loadCodexVersion(process.env.CODEX_COMMAND || "codex"),
     codexDefaults: {
       model: defaultModel,
       reasoningEffort: defaultReasoningEffort,

@@ -1,15 +1,15 @@
-const CACHE_NAME = "codex-discord-connected-display-shell-v3";
+const CACHE_NAME = "codex-discord-connected-display-shell-v23";
 const SHELL_ASSETS = [
   "/",
-  "/index.html",
-  "/styles.css",
-  "/app.js",
-  "/manifest.webmanifest",
-  "/icon.svg",
-  "/icon-maskable.svg",
-  "/icon-192.png",
-  "/icon-512.png",
-  "/icon-maskable-512.png",
+  "/index.html?v=0.1.22",
+  "/styles.css?v=0.1.22",
+  "/app.js?v=0.1.22",
+  "/manifest.webmanifest?v=0.1.22",
+  "/icon.svg?v=0.1.22",
+  "/icon-maskable.svg?v=0.1.22",
+  "/icon-192.png?v=0.1.22",
+  "/icon-512.png?v=0.1.22",
+  "/icon-maskable-512.png?v=0.1.22",
 ];
 
 function isCacheableRequest(requestUrl) {

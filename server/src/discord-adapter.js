@@ -154,6 +154,18 @@ function formatFinishedStatusContent(status, startedAt) {
   return `> ${label} (${seconds}s)`;
 }
 
+function formatQueuedNotice(turnsAhead) {
+  if (!Number.isFinite(turnsAhead) || turnsAhead <= 0) {
+    return null;
+  }
+
+  if (turnsAhead === 1) {
+    return "☑ Queued as next turn.";
+  }
+
+  return `☑ Queued. ${turnsAhead} turns ahead.`;
+}
+
 function getProgressUpdateDelayMs(updateStep) {
   return updateStep < 4 ? 15000 : 60000;
 }
@@ -1042,7 +1054,7 @@ export class DiscordAdapter {
         })),
       );
 
-      await this.bridge.handleIncomingMessage({
+      const result = await this.bridge.handleIncomingMessage({
         sessionId: session.id,
         text: message.content,
         source: "discord",
@@ -1050,6 +1062,10 @@ export class DiscordAdapter {
         attachments: savedAttachments,
       });
       await message.react("\u2611").catch(() => null);
+      const queuedNotice = formatQueuedNotice(result.queue?.turnsAhead);
+      if (queuedNotice) {
+        await message.reply(queuedNotice).catch(() => null);
+      }
     } catch (error) {
       await message.reply(error instanceof Error ? error.message : String(error));
     }

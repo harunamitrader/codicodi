@@ -44,20 +44,56 @@ let eventStream = null;
 let streamReconnectTimerId = null;
 let stateRefreshTimerId = null;
 let hasSeenStreamOpen = false;
+const UI_BUILD_VERSION =
+  document.querySelector('meta[name="app-build-version"]')?.getAttribute("content") || "dev";
+const RUNTIME_URL = new URL(window.location.href);
+const IS_DESKTOP_APP = RUNTIME_URL.searchParams.get("desktop") === "1";
+
 let deferredInstallPrompt = null;
+let composerFeedbackTimerId = null;
+let composerDragDepth = 0;
+async function resetDesktopServiceWorkerState() {
+  if (!IS_DESKTOP_APP || !("serviceWorker" in navigator)) {
+    return false;
+  }
+
+  const registrations = await navigator.serviceWorker.getRegistrations();
+  await Promise.all(registrations.map((registration) => registration.unregister()));
+
+  if ("caches" in window) {
+    const cacheKeys = await caches.keys();
+    await Promise.all(cacheKeys.map((cacheKey) => caches.delete(cacheKey)));
+  }
+
+  if (
+    navigator.serviceWorker.controller &&
+    sessionStorage.getItem("codicodi-desktop-sw-reset") !== UI_BUILD_VERSION
+  ) {
+    sessionStorage.setItem("codicodi-desktop-sw-reset", UI_BUILD_VERSION);
+    window.location.replace(`/index.html?desktop=1&v=${encodeURIComponent(UI_BUILD_VERSION)}`);
+    return true;
+  }
+
+  return false;
+}
 
 const sessionList = document.querySelector("#session-list");
 const sessionCount = document.querySelector("#session-count");
+const appVersionBadge = document.querySelector("#app-version-badge");
 const sessionTitle = document.querySelector("#session-title");
 const sessionSubtitle = document.querySelector("#session-subtitle");
 const sessionCard = document.querySelector("#session-card");
-const sessionIdValue = document.querySelector("#session-id-value");
 const discordChannelCard = document.querySelector("#discord-channel-card");
 const discordIdValue = document.querySelector("#discord-id-value");
 const modelOptions = document.querySelector("#model-options");
 const reasoningOptions = document.querySelector("#reasoning-options");
 const fastOnButton = document.querySelector("#fast-on-button");
 const fastOffButton = document.querySelector("#fast-off-button");
+const developerToolsGroup = document.querySelector("#developer-tools-group");
+const developerConsoleButton = document.querySelector("#developer-console-button");
+const developerConsoleFormattedButton = document.querySelector(
+  "#developer-console-formatted-button",
+);
 const statusPill = document.querySelector("#status-pill");
 const chatLog = document.querySelector("#chat-log");
 const messageForm = document.querySelector("#message-form");
@@ -66,6 +102,7 @@ const attachmentInput = document.querySelector("#attachment-input");
 const attachmentButton = document.querySelector("#attachment-button");
 const installAppButton = document.querySelector("#install-app-button");
 const pendingAttachmentList = document.querySelector("#pending-attachment-list");
+const composerFeedback = document.querySelector("#composer-feedback");
 const newSessionButton = document.querySelector("#new-session-button");
 const deleteSessionButton = document.querySelector("#delete-session-button");
 const restoreSessionButton = document.querySelector("#restore-session-button");
@@ -120,6 +157,53 @@ function formatAttachmentSize(value) {
   }
 
   return `${value} B`;
+}
+
+function formatQueueNotice(turnsAhead) {
+  if (!Number.isFinite(turnsAhead) || turnsAhead <= 0) {
+    return "";
+  }
+
+  if (turnsAhead === 1) {
+    return "Queued as next turn.";
+  }
+
+  return `Queued. ${turnsAhead} turns ahead.`;
+}
+
+function hideComposerFeedback() {
+  if (!composerFeedback) {
+    return;
+  }
+
+  composerFeedback.hidden = true;
+  composerFeedback.textContent = "";
+  if (composerFeedbackTimerId != null) {
+    window.clearTimeout(composerFeedbackTimerId);
+    composerFeedbackTimerId = null;
+  }
+}
+
+function showComposerFeedback(message) {
+  if (!composerFeedback) {
+    return;
+  }
+
+  if (!message) {
+    hideComposerFeedback();
+    return;
+  }
+
+  composerFeedback.hidden = false;
+  composerFeedback.textContent = message;
+  if (composerFeedbackTimerId != null) {
+    window.clearTimeout(composerFeedbackTimerId);
+  }
+  composerFeedbackTimerId = window.setTimeout(() => {
+    composerFeedback.hidden = true;
+    composerFeedback.textContent = "";
+    composerFeedbackTimerId = null;
+  }, 6000);
 }
 
 function getStatusLabel(status) {
@@ -245,6 +329,14 @@ function renderInstallAppButton() {
   installAppButton.hidden = isStandaloneMode() || !deferredInstallPrompt;
 }
 
+function renderAppVersion() {
+  if (!appVersionBadge) {
+    return;
+  }
+
+  appVersionBadge.textContent = `v${state.runtime?.app?.version || "unknown"}`;
+}
+
 function renderPendingAttachments() {
   if (state.pendingAttachments.length === 0) {
     pendingAttachmentList.hidden = true;
@@ -275,9 +367,81 @@ function renderPendingAttachments() {
     .join("");
 }
 
+function resetComposerDragState() {
+  composerDragDepth = 0;
+  messageForm.classList.remove("composer-drag-active");
+}
+
+function setComposerDragState(isActive) {
+  messageForm.classList.toggle("composer-drag-active", isActive);
+}
+
+function getAttachmentLimits() {
+  return {
+    maxAttachments: state.runtime?.attachments?.maxAttachmentsPerMessage || 5,
+    maxBytes: state.runtime?.attachments?.maxAttachmentBytes || 20 * 1024 * 1024,
+  };
+}
+
+function getFileExtensionFromType(type) {
+  const normalized = String(type || "").toLowerCase();
+  if (!normalized.includes("/")) {
+    return "bin";
+  }
+
+  const [, subtype = "bin"] = normalized.split("/", 2);
+  if (subtype === "jpeg") {
+    return "jpg";
+  }
+
+  return subtype.replace(/[^a-z0-9]+/g, "-") || "bin";
+}
+
+function normalizeAttachmentFile(file, index = 0) {
+  if (file?.name) {
+    return file;
+  }
+
+  const extension = getFileExtensionFromType(file?.type);
+  const timestamp = new Date().toISOString().replaceAll(/[:.]/g, "-");
+  const fallbackName = `pasted-file-${timestamp}-${index + 1}.${extension}`;
+  return new File([file], fallbackName, {
+    type: file?.type || "application/octet-stream",
+    lastModified: file?.lastModified || Date.now(),
+  });
+}
+
+function addPendingAttachments(nextFiles) {
+  const normalizedFiles = (Array.isArray(nextFiles) ? nextFiles : [])
+    .filter((file) => file instanceof File)
+    .map((file, index) => normalizeAttachmentFile(file, index));
+
+  if (normalizedFiles.length === 0) {
+    return false;
+  }
+
+  const { maxAttachments, maxBytes } = getAttachmentLimits();
+  const mergedFiles = [...state.pendingAttachments, ...normalizedFiles];
+  if (mergedFiles.length > maxAttachments) {
+    alert(`You can attach up to ${maxAttachments} files per message.`);
+    return false;
+  }
+
+  const oversizedFile = mergedFiles.find((file) => file.size > maxBytes);
+  if (oversizedFile) {
+    alert(`${oversizedFile.name} is too large. Limit is ${Math.floor(maxBytes / (1024 * 1024))} MB.`);
+    return false;
+  }
+
+  state.pendingAttachments = mergedFiles;
+  renderPendingAttachments();
+  return true;
+}
+
 function clearPendingAttachments() {
   state.pendingAttachments = [];
   attachmentInput.value = "";
+  resetComposerDragState();
   renderPendingAttachments();
 }
 
@@ -347,6 +511,25 @@ async function serializePendingAttachments() {
       base64: await readFileAsBase64(file),
     })),
   );
+}
+
+function dataTransferHasFiles(dataTransfer) {
+  if (!dataTransfer?.types) {
+    return false;
+  }
+
+  return [...dataTransfer.types].includes("Files");
+}
+
+function getClipboardFiles(clipboardData) {
+  if (!clipboardData?.items) {
+    return [];
+  }
+
+  return [...clipboardData.items]
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file) => file instanceof File);
 }
 
 function getModelDefinition(slug) {
@@ -421,13 +604,8 @@ function renderSessions() {
     const button = document.createElement("button");
     button.className = `session-card${session.id === state.activeSessionId ? " active" : ""}`;
     button.innerHTML = `
-      <div class="session-card-header">
-        <strong>${escapeHtml(session.title)}</strong>
-        <span class="session-status">${escapeHtml(getStatusLabel(session.status))}</span>
-      </div>
+      <strong>${escapeHtml(session.title)}</strong>
       <small>${escapeHtml(formatDateTime(session.updatedAt))}</small>
-      <small>${escapeHtml(session.model)} / ${escapeHtml(getReasoningLabel(session.reasoningEffort))}</small>
-      <small>${escapeHtml(session.fastMode ? "Fast on" : "Fast off")}</small>
     `;
     button.addEventListener("click", () => {
       setActiveSession(session.id).catch((error) => {
@@ -441,6 +619,9 @@ function renderSessions() {
 function renderSettingsButtons(session) {
   modelOptions.innerHTML = "";
   reasoningOptions.innerHTML = "";
+  developerToolsGroup.hidden = false;
+  developerConsoleButton.disabled = false;
+  developerConsoleFormattedButton.disabled = false;
 
   if (!state.runtime || !session) {
     fastOnButton.disabled = true;
@@ -541,7 +722,6 @@ function renderEmptySession() {
   sessionSubtitle.textContent = "Select a session from the list or create a new one to begin.";
   statusPill.textContent = getStatusLabel("idle");
   statusPill.dataset.status = "idle";
-  sessionIdValue.textContent = "Not selected";
   sessionCard.setAttribute("aria-disabled", "true");
   discordIdValue.textContent = formatDiscordChannel(null);
   discordChannelCard.setAttribute("aria-disabled", "true");
@@ -752,7 +932,6 @@ function renderActiveSession() {
   sessionSubtitle.textContent = `Updated ${formatDateTime(session.updatedAt)}`;
   statusPill.textContent = getStatusLabel(session.status);
   statusPill.dataset.status = session.status;
-  sessionIdValue.textContent = session.title;
   sessionCard.setAttribute("aria-disabled", "false");
   discordIdValue.textContent = formatDiscordChannel(session);
   discordChannelCard.setAttribute("aria-disabled", "false");
@@ -776,11 +955,11 @@ function renderActiveSession() {
   }
 
   chatLog.innerHTML = content;
-  chatLog.scrollTop = chatLog.scrollHeight;
 }
 
 async function loadRuntime() {
   state.runtime = await requestJson("/api/runtime");
+  renderAppVersion();
 }
 
 async function loadSessions() {
@@ -936,8 +1115,18 @@ async function restoreActiveSession() {
     }
 
     hasSeenStreamOpen = false;
-    await syncSessions(session.id);
+    const restored = await requestJson(`/api/sessions/${session.id}/restore`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    upsertSession(restored.session);
+    state.eventsBySession.set(session.id, restored.events || []);
+    renderSessions();
+    renderActiveSession();
     subscribeEvents();
+    if (restored.recovered) {
+      showComposerFeedback("Recovered a stale session state and reloaded the timeline.");
+    }
     restoreSessionButton.textContent = "Restored";
     window.setTimeout(() => {
       restoreSessionButton.textContent = originalLabel;
@@ -976,14 +1165,24 @@ async function sendMessage() {
     return;
   }
 
-  await requestJson(`/api/sessions/${session.id}/messages`, {
+  const result = await requestJson(`/api/sessions/${session.id}/messages`, {
     method: "POST",
     body: JSON.stringify({ text, attachments }),
   });
 
   messageInput.value = "";
   clearPendingAttachments();
+  showComposerFeedback(formatQueueNotice(result.queue?.turnsAhead));
   await syncSessions(session.id);
+}
+
+async function openDeveloperConsole(mode = "raw") {
+  const result = await requestJson("/api/developer/codex-console/open", {
+    method: "POST",
+    body: JSON.stringify({ mode }),
+  });
+
+  showComposerFeedback(result.message || "Developer console opened.");
 }
 
 async function bindChannel(channel) {
@@ -1153,29 +1352,8 @@ attachmentButton.addEventListener("click", () => {
 
 attachmentInput.addEventListener("change", (event) => {
   const nextFiles = [...(event.target.files || [])];
-  if (nextFiles.length === 0) {
-    return;
-  }
-
-  const maxAttachments = state.runtime?.attachments?.maxAttachmentsPerMessage || 5;
-  const maxBytes = state.runtime?.attachments?.maxAttachmentBytes || 20 * 1024 * 1024;
-  const mergedFiles = [...state.pendingAttachments, ...nextFiles];
-  if (mergedFiles.length > maxAttachments) {
-    alert(`You can attach up to ${maxAttachments} files per message.`);
-    attachmentInput.value = "";
-    return;
-  }
-
-  const oversizedFile = mergedFiles.find((file) => file.size > maxBytes);
-  if (oversizedFile) {
-    alert(`${oversizedFile.name} is too large. Limit is ${Math.floor(maxBytes / (1024 * 1024))} MB.`);
-    attachmentInput.value = "";
-    return;
-  }
-
-  state.pendingAttachments = mergedFiles;
   attachmentInput.value = "";
-  renderPendingAttachments();
+  addPendingAttachments(nextFiles);
 });
 
 pendingAttachmentList.addEventListener("click", (event) => {
@@ -1187,6 +1365,64 @@ pendingAttachmentList.addEventListener("click", (event) => {
   const index = Number(button.getAttribute("data-attachment-index"));
   state.pendingAttachments.splice(index, 1);
   renderPendingAttachments();
+});
+
+messageInput.addEventListener("paste", (event) => {
+  const clipboardFiles = getClipboardFiles(event.clipboardData);
+  if (clipboardFiles.length === 0) {
+    return;
+  }
+
+  event.preventDefault();
+  addPendingAttachments(clipboardFiles);
+});
+
+messageForm.addEventListener("dragenter", (event) => {
+  if (!dataTransferHasFiles(event.dataTransfer)) {
+    return;
+  }
+
+  event.preventDefault();
+  composerDragDepth += 1;
+  setComposerDragState(true);
+});
+
+messageForm.addEventListener("dragover", (event) => {
+  if (!dataTransferHasFiles(event.dataTransfer)) {
+    return;
+  }
+
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+  setComposerDragState(true);
+});
+
+messageForm.addEventListener("dragleave", (event) => {
+  if (!dataTransferHasFiles(event.dataTransfer)) {
+    return;
+  }
+
+  event.preventDefault();
+  composerDragDepth = Math.max(0, composerDragDepth - 1);
+
+  if (composerDragDepth === 0 || !messageForm.contains(event.relatedTarget)) {
+    resetComposerDragState();
+  }
+});
+
+messageForm.addEventListener("drop", (event) => {
+  if (!dataTransferHasFiles(event.dataTransfer)) {
+    return;
+  }
+
+  event.preventDefault();
+  const droppedFiles = [...(event.dataTransfer.files || [])];
+  resetComposerDragState();
+  addPendingAttachments(droppedFiles);
+});
+
+messageForm.addEventListener("dragend", () => {
+  resetComposerDragState();
 });
 
 newSessionButton.addEventListener("click", async () => {
@@ -1293,17 +1529,39 @@ fastOffButton.addEventListener("click", async () => {
   }
 });
 
-Promise.all([loadRuntime(), loadSessions()])
-  .then(() => {
-    renderSessions();
-    renderActiveSession();
-    subscribeEvents();
-    startBackgroundSync();
-  })
-  .catch((error) => {
-    console.error(error);
+developerConsoleButton.addEventListener("click", async () => {
+  try {
+    await openDeveloperConsole("raw");
+  } catch (error) {
     alert(error.message);
-  });
+  }
+});
+
+developerConsoleFormattedButton.addEventListener("click", async () => {
+  try {
+    await openDeveloperConsole("formatted");
+  } catch (error) {
+    alert(error.message);
+  }
+});
+
+async function bootstrapApp() {
+  const didRedirectForDesktopReset = await resetDesktopServiceWorkerState();
+  if (didRedirectForDesktopReset) {
+    return;
+  }
+
+  await Promise.all([loadRuntime(), loadSessions()]);
+  renderSessions();
+  renderActiveSession();
+  subscribeEvents();
+  startBackgroundSync();
+}
+
+bootstrapApp().catch((error) => {
+  console.error(error);
+  alert(error.message);
+});
 
 window.addEventListener("focus", () => {
   syncSessions().catch((error) => {
@@ -1311,11 +1569,22 @@ window.addEventListener("focus", () => {
   });
 });
 
-if ("serviceWorker" in navigator) {
+if ("serviceWorker" in navigator && !IS_DESKTOP_APP) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch((error) => {
-      console.error("Service worker registration failed:", error);
-    });
+    navigator.serviceWorker
+      .register(`/sw.js?v=${encodeURIComponent(UI_BUILD_VERSION)}`)
+      .then(async (registration) => {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(
+          registrations
+            .filter((entry) => entry.scope === registration.scope && entry !== registration)
+            .map((entry) => entry.unregister()),
+        );
+        await registration.update().catch(() => null);
+      })
+      .catch((error) => {
+        console.error("Service worker registration failed:", error);
+      });
   });
 }
 

@@ -423,7 +423,7 @@ dependencies = [
 
 [[package]]
 name = "codex-discord-connected-display-tauri"
-version = "0.1.0"
+version = "0.1.22"
 dependencies = [
  "log",
  "serde",
@@ -431,6 +431,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-log",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

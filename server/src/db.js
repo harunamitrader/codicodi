@@ -55,7 +55,11 @@ export function createDatabase(databasePath, sessionDefaults) {
       model = COALESCE(model, '${escape(sessionDefaults.model)}'),
       model_reasoning_effort = COALESCE(model_reasoning_effort, '${escape(sessionDefaults.reasoningEffort)}'),
       profile = COALESCE(profile, '${escape(sessionDefaults.profile)}'),
-      service_tier = COALESCE(service_tier, '${escape(sessionDefaults.serviceTier)}')
+      service_tier = CASE
+        WHEN service_tier = 'fast' THEN 'fast'
+        WHEN service_tier IS NULL OR TRIM(service_tier) = '' THEN '${escape(sessionDefaults.serviceTier)}'
+        ELSE 'flex'
+      END
   `);
 
   return db;

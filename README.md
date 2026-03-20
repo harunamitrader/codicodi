@@ -44,7 +44,11 @@ Codex Discord Connected Display は、1つの Codex CLI セッションを
 - セッションごとに model / reasoning / fast mode を切り替え
 - 実行中の Codex を停止
 - UI と Discord に進捗表示
+- 再起動後の stale session 復旧と `Restore Chat`
 - 途中メッセージやコマンド実行メッセージの表示
+- キュー待ちターン数の表示
+- ローカル UI での drag & drop / paste 添付
+- 開発者向け raw / formatted コンソール表示
 - Discord チャンネルとセッションの紐付け
 - 指定フォルダ配下のファイル変更を Discord に通知
 - Tauri デスクトップアプリとして起動
@@ -221,6 +225,7 @@ CODEX_COMMAND=codex
 CODEX_WORKDIR=C:\Users\your-name\Desktop\codex
 CODEX_ENABLE_SEARCH=true
 CODEX_BYPASS_APPROVALS_AND_SANDBOX=true
+CODEX_DEVELOPER_MODE=false
 DATA_DIR=./data
 DISCORD_BOT_TOKEN=your-bot-token
 DISCORD_ALLOWED_GUILD_IDS=your-server-id
@@ -237,6 +242,8 @@ FILE_LOG_CHANNEL_ID=
   Codex CLI を起動するコマンド名です。通常は `codex` のままで大丈夫です。
 - `CODEX_WORKDIR`
   Codex が標準で作業するフォルダです。
+- `CODEX_DEVELOPER_MODE`
+  `true` にすると UI に `Open Developer Console` ボタンが出て、Codex CLI の live log を追う PowerShell ウィンドウを開けます。
 - `DISCORD_BOT_TOKEN`
   自分の Discord Bot Token です。絶対に GitHub に上げないでください。
 - `DISCORD_ALLOWED_GUILD_IDS`
@@ -268,16 +275,21 @@ http://127.0.0.1:3087
 npm run tauri:dev
 ```
 
+同じ内容は `launch-tauri-dev.ps1` からも起動できます。
+
 インストーラーをビルド:
 
 ```powershell
 npm run tauri:build
 ```
 
+ビルド済みの release exe を直接起動する場合は、残留 bridge や競合ポートを掃除してから `launch-direct.ps1` で起動できます。
+
 注意:
 
 - 現時点の Tauri 版も、内部ではローカルの Node.js と Codex CLI を前提にしています
 - つまり、完全な単独バイナリではなく、ローカル bridge を起動するデスクトップラッパーです
+- Tauri 版ではウィンドウを閉じる前に確認ダイアログが表示されます
 
 ## アプリの使い方
 
@@ -291,8 +303,11 @@ npm run tauri:build
 - Model / Reasoning / Fast mode の切り替え
 - メッセージ送信
 - ファイル追加
+- drag & drop / paste での添付追加
 - 実行中停止
-- `Restore Chat` による DB からの会話再取得
+- `Restore Chat` による DB からの会話再取得と stale session 復旧
+- `Open Developer Console` / `Open Formatted Console`
+  - `CODEX_DEVELOPER_MODE=true` のとき利用可能
 - セッション削除
 
 ### Discord コマンド
@@ -323,6 +338,7 @@ npm run tauri:build
 
 - 画像は Codex CLI の `--image` で渡します
 - 画像以外のファイルはローカルに保存し、その保存パスをプロンプトに追記して Codex に見せます
+- ローカル UI ではファイル picker に加えて drag & drop / paste に対応しています
 - 保存場所は `data/uploads/` です
 
 ### ファイル変更通知
@@ -347,6 +363,8 @@ npm run tauri:build
   セッション情報とイベント履歴
 - `data/uploads/`
   添付ファイル
+- `data/logs/`
+  developer console 用の raw / formatted log
 - `.env`
   Bot Token や設定値
 
@@ -391,6 +409,10 @@ npm run tauri:build
   ライセンスの日本語説明
 - [CHANGELOG.md](CHANGELOG.md)
   変更履歴
+- [launch-direct.ps1](launch-direct.ps1)
+  build 済みの Tauri exe を直接起動する補助スクリプト
+- [launch-tauri-dev.ps1](launch-tauri-dev.ps1)
+  Tauri 開発モード起動スクリプト
 
 ## 責任範囲について
 

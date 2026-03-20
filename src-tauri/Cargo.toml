@@ -1,6 +1,6 @@
 [package]
 name = "codex-discord-connected-display-tauri"
-version = "0.1.0"
+version = "0.1.22"
 description = "Desktop wrapper for Codex Discord Connected Display"
 authors = ["harunamitrader"]
 license = "MIT"
@@ -23,3 +23,4 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.10.3", features = [] }
 tauri-plugin-log = "2"
+windows-sys = { version = "0.59.0", features = ["Win32_UI_WindowsAndMessaging"] }

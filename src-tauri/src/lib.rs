@@ -10,10 +10,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tauri::{AppHandle, Manager, RunEvent, Url};
+use tauri::{AppHandle, Manager, RunEvent, Url, WindowEvent};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, IDOK, MB_ICONQUESTION, MB_OKCANCEL};
 
 const HEALTH_PATH: &str = "/api/health";
 const HEALTH_OK_MARKER: &str = "\"ok\":true";
@@ -23,6 +25,11 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[derive(Default)]
 struct BridgeProcessState {
     child: Mutex<Option<Child>>,
+}
+
+#[derive(Default)]
+struct CloseConfirmState {
+    allow_close: Mutex<bool>,
 }
 
 #[derive(Clone)]
@@ -35,6 +42,7 @@ struct BridgeTarget {
 pub fn run() {
     tauri::Builder::default()
         .manage(BridgeProcessState::default())
+        .manage(CloseConfirmState::default())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -67,6 +75,11 @@ pub fn run() {
             RunEvent::Exit => {
                 stop_bridge_process(&app_handle);
             }
+            RunEvent::WindowEvent { label, event, .. } => {
+                if label == "main" {
+                    handle_main_window_event(&app_handle, &event);
+                }
+            }
             _ => {}
         });
 }
@@ -95,6 +108,8 @@ fn ensure_bridge_available(app: &AppHandle) -> Result<(), Box<dyn std::error::Er
             project_root.display()
         ),
     );
+
+    terminate_stale_bridge_processes(app, &bridge_target);
 
     if wait_for_health(&bridge_target, Duration::from_secs(2)) {
         log::info!(
@@ -208,8 +223,10 @@ fn navigate_main_window(app: &AppHandle) -> Result<(), Box<dyn std::error::Error
     let project_root = resolve_project_root(app)?;
     let bridge_target = resolve_bridge_target(&project_root);
     let target_url = Url::parse(&format!(
-        "http://{}:{}",
-        bridge_target.host, bridge_target.port
+        "http://{}:{}/index.html?desktop=1&v={}",
+        bridge_target.host,
+        bridge_target.port,
+        env!("CARGO_PKG_VERSION")
     ))?;
 
     if let Some(window) = app.get_webview_window("main") {
@@ -241,6 +258,68 @@ fn close_splash_window(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
+fn handle_main_window_event(app: &AppHandle, event: &WindowEvent) {
+    let WindowEvent::CloseRequested { api, .. } = event else {
+        return;
+    };
+
+    if should_allow_close(app) {
+        return;
+    }
+
+    api.prevent_close();
+    if !confirm_main_window_close() {
+        log_wrapper(app, "close request cancelled by user");
+        return;
+    }
+
+    set_allow_close(app, true);
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(error) = window.close() {
+            set_allow_close(app, false);
+            log_wrapper(app, &format!("failed to close main window after confirmation: {error}"));
+        }
+    } else {
+        log_wrapper(app, "main window missing while attempting confirmed close");
+        app.exit(0);
+    }
+}
+
+fn should_allow_close(app: &AppHandle) -> bool {
+    let state = app.state::<CloseConfirmState>();
+    let allow_close = *state
+        .allow_close
+        .lock()
+        .expect("close confirmation mutex poisoned");
+    allow_close
+}
+
+fn set_allow_close(app: &AppHandle, value: bool) {
+    let state = app.state::<CloseConfirmState>();
+    let mut allow_close = state
+        .allow_close
+        .lock()
+        .expect("close confirmation mutex poisoned");
+    *allow_close = value;
+}
+
+#[cfg(target_os = "windows")]
+fn confirm_main_window_close() -> bool {
+    let title = wide("CoDiCoDi");
+    let message = wide("Close Codex Discord Connected Display?");
+    unsafe { MessageBoxW(std::ptr::null_mut(), message.as_ptr(), title.as_ptr(), MB_OKCANCEL | MB_ICONQUESTION) == IDOK }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn confirm_main_window_close() -> bool {
+    true
+}
+
+#[cfg(target_os = "windows")]
+fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 fn resolve_bridge_target(project_root: &Path) -> BridgeTarget {
     let env_file = normalize_windows_path(project_root).join(".env");
     let env_text = fs::read_to_string(env_file).unwrap_or_default();
@@ -270,6 +349,38 @@ fn resolve_bridge_target(project_root: &Path) -> BridgeTarget {
 
     BridgeTarget { host, port }
 }
+
+#[cfg(target_os = "windows")]
+fn terminate_stale_bridge_processes(app: &AppHandle, bridge_target: &BridgeTarget) {
+    let legacy_process_script = "$processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*AppData\\\\Local\\\\Codex Discord Connected Display\\\\_up_\\\\server\\\\src\\\\index.js*' -or $_.CommandLine -like '*Codex Discord Connected Display\\\\_up_\\\\server\\\\src\\\\index.js*' }; foreach ($process in $processes) { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue }";
+    let _ = Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", legacy_process_script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+
+    for port in [bridge_target.port, 3087, 3187] {
+        let port_script = format!(
+            "Get-NetTCPConnection -State Listen -LocalPort {} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object {{ Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }}",
+            port
+        );
+
+        let _ = Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", &port_script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
+
+    log_wrapper(
+        app,
+        &format!(
+            "terminated stale bridge processes before startup on ports {}, 3087, 3187",
+            bridge_target.port
+        ),
+    );
+}
+
+#[cfg(not(target_os = "windows"))]
+fn terminate_stale_bridge_processes(_app: &AppHandle, _bridge_target: &BridgeTarget) {}
 
 fn normalize_windows_path(path: &Path) -> PathBuf {
     let value = path.display().to_string();

@@ -15,7 +15,7 @@ function parseSession(row) {
     model: row.model,
     reasoningEffort: row.model_reasoning_effort,
     profile: row.profile,
-    serviceTier: row.service_tier,
+    serviceTier: row.service_tier === "fast" ? "fast" : "flex",
     fastMode: row.service_tier === "fast",
     createdAt: row.created_at,
     updatedAt: row.updated_at,

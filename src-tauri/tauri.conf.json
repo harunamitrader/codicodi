@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Codex Discord Connected Display",
-  "version": "0.1.0",
+  "version": "0.1.22",
   "identifier": "io.github.harunamitrader.codicodi",
   "build": {
     "frontendDist": "../ui",
@@ -15,6 +15,8 @@
         "title": "Codex Discord Connected Display",
         "width": 1440,
         "height": 960,
+        "minWidth": 800,
+        "minHeight": 600,
         "resizable": true,
         "fullscreen": false,
         "visible": false

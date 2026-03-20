@@ -55,6 +55,11 @@ function serveFile(response, filePath) {
   fs.createReadStream(filePath).pipe(response);
 }
 
+function logRequest(request, pathname) {
+  const timestamp = new Date().toISOString();
+  console.log(`[http] ${timestamp} ${request.method || "GET"} ${pathname}`);
+}
+
 function serveUploadsFile(response, uploadsDir, pathname) {
   const relativePath = decodeURIComponent(pathname.replace(/^\/uploads\//, ""));
   const safePath = path.normalize(relativePath).replace(/^(\.\.[/\\])+/, "");
@@ -79,6 +84,7 @@ export function createHttpServer({ config, bridge, bus, discord, attachments }) 
     try {
       const url = buildRequestUrl(request);
       const pathname = url.pathname;
+      logRequest(request, pathname);
 
       if (pathname === "/api/health" && request.method === "GET") {
         sendJson(response, 200, { ok: true });
@@ -87,6 +93,14 @@ export function createHttpServer({ config, bridge, bus, discord, attachments }) 
 
       if (pathname === "/api/runtime" && request.method === "GET") {
         sendJson(response, 200, bridge.getRuntimeInfo());
+        return;
+      }
+
+      if (pathname === "/api/developer/codex-console/open" && request.method === "POST") {
+        const body = await readJsonBody(request);
+        const result = bridge.openDeveloperConsole(body.mode);
+        const statusCode = result.ok ? 200 : 400;
+        sendJson(response, statusCode, result);
         return;
       }
 
@@ -156,6 +170,24 @@ export function createHttpServer({ config, bridge, bus, discord, attachments }) 
         return;
       }
 
+      const restoreMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/restore$/);
+      if (restoreMatch && request.method === "POST") {
+        const result = bridge.recoverSessionState(restoreMatch[1]);
+        if (!result.session) {
+          sendJson(response, 404, { error: "Session not found" });
+          return;
+        }
+
+        const detail = bridge.getSessionDetail(restoreMatch[1]);
+        sendJson(response, 200, {
+          recovered: result.recovered,
+          reason: result.reason,
+          session: detail?.session || result.session,
+          events: detail?.events || [],
+        });
+        return;
+      }
+
       const messageMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/messages$/);
       if (messageMatch && request.method === "POST") {
         if (!bridge.getSession(messageMatch[1])) {
@@ -175,14 +207,14 @@ export function createHttpServer({ config, bridge, bus, discord, attachments }) 
           return;
         }
 
-        await bridge.handleIncomingMessage({
+        const result = await bridge.handleIncomingMessage({
           sessionId: messageMatch[1],
           text,
           source: "ui",
           attachments: savedAttachments,
         });
 
-        sendJson(response, 202, { accepted: true });
+        sendJson(response, 202, { accepted: true, queue: result.queue });
         return;
       }
 

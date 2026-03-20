@@ -2,6 +2,8 @@ function isCancelledError(error) {
   return Boolean(error?.cancelled || error?.name === "CodexRunCancelledError");
 }
 
+const RECOVERABLE_SESSION_STATUSES = new Set(["queued", "running", "waiting_codex"]);
+
 function formatSessionTimestamp(value = new Date()) {
   return new Intl.DateTimeFormat("sv-SE", {
     year: "numeric",
@@ -67,6 +69,7 @@ export class BridgeService {
     this.config = config;
     this.attachments = attachments;
     this.sessionQueues = new Map();
+    this.recoverStaleSessions();
   }
 
   listSessions() {
@@ -75,6 +78,9 @@ export class BridgeService {
 
   getRuntimeInfo() {
     return {
+      app: {
+        version: this.config.appVersion,
+      },
       codexVersion: this.config.codexVersion,
       workdir: this.config.codexWorkdir,
       defaultProfile: this.config.codexDefaults.profile,
@@ -89,6 +95,9 @@ export class BridgeService {
       attachments: {
         maxAttachmentsPerMessage: this.config.maxAttachmentsPerMessage,
         maxAttachmentBytes: this.config.maxAttachmentBytes,
+      },
+      developer: {
+        enabled: this.config.codexDeveloperMode,
       },
     };
   }
@@ -141,10 +150,10 @@ export class BridgeService {
       : modelDefinition.defaultReasoningLevel;
     const serviceTierInput =
       input.serviceTier ??
-      (input.fastMode == null ? undefined : input.fastMode ? "fast" : "auto") ??
+      (input.fastMode == null ? undefined : input.fastMode ? "fast" : "flex") ??
       currentSession?.serviceTier ??
       this.config.codexDefaults.serviceTier;
-    const serviceTier = serviceTierInput === "fast" ? "fast" : "auto";
+    const serviceTier = serviceTierInput === "fast" ? "fast" : "flex";
     const profile =
       input.profile ??
       currentSession?.profile ??
@@ -283,6 +292,62 @@ export class BridgeService {
     };
   }
 
+  openDeveloperConsole(mode = "raw") {
+    return this.codex.openDeveloperConsole(mode);
+  }
+
+  recoverSessionState(sessionId) {
+    const session = this.getSession(sessionId);
+    if (!session) {
+      return { recovered: false, reason: "not_found", session: null };
+    }
+
+    const queueState = this.getQueueState(sessionId);
+    const hasActiveWork = Boolean(
+      queueState.processing || queueState.activeRun || queueState.items.length > 0,
+    );
+    if (!RECOVERABLE_SESSION_STATUSES.has(session.status) || hasActiveWork) {
+      return { recovered: false, reason: "not_stale", session };
+    }
+
+    const recoveredSession = this.store.updateSession(sessionId, {
+      status: "stopped",
+    });
+    const statusEvent = this.store.addEvent({
+      sessionId,
+      source: "system",
+      eventType: "status.changed",
+      payload: {
+        status: "stopped",
+        meta: {
+          reason: "recovered_after_restart",
+          previousStatus: session.status,
+        },
+      },
+    });
+    const errorEvent = this.store.addEvent({
+      sessionId,
+      source: "system",
+      eventType: "error.created",
+      payload: {
+        message:
+          "CoDiCoDi restarted while this session was still marked active. The in-flight run was reset to stopped, so please review the latest messages before retrying.",
+      },
+    });
+
+    this.bus.publish("session.updated", recoveredSession);
+    this.bus.publish("status.changed", statusEvent);
+    this.bus.publish("error.created", errorEvent);
+
+    return { recovered: true, reason: "recovered_after_restart", session: recoveredSession };
+  }
+
+  recoverStaleSessions() {
+    for (const session of this.store.listSessions()) {
+      this.recoverSessionState(session.id);
+    }
+  }
+
   bindDiscordChannel(sessionId, channelId) {
     return this.bindDiscordChannelWithName(sessionId, channelId, null);
   }
@@ -369,6 +434,8 @@ export class BridgeService {
     this.bus.publish("message.created", userEvent);
 
     const queueState = this.getQueueState(sessionId);
+    const turnsAhead =
+      queueState.items.length + (queueState.processing || queueState.activeRun ? 1 : 0);
     queueState.items.push({
       text: normalizedText,
       source,
@@ -384,7 +451,14 @@ export class BridgeService {
       this.publishError(sessionId, error, "system");
     });
 
-    return userEvent;
+    return {
+      userEvent,
+      queue: {
+        turnsAhead,
+        isQueuedBehindCurrentTurn: turnsAhead > 0,
+        queuedCount: queueState.items.length,
+      },
+    };
   }
 
   getQueueState(sessionId) {
@@ -435,6 +509,7 @@ export class BridgeService {
     const publishedAssistantItemIds = new Set();
     const publishedCommandItemIds = new Set();
     let pendingAssistantText = null;
+    let didReceiveTurnCompleted = false;
     const prompt = buildPromptWithAttachments(job.text, job.attachments);
     const imagePaths = splitAttachments(job.attachments).images.map(
       (attachment) => attachment.savedPath,
@@ -452,6 +527,10 @@ export class BridgeService {
       onEvent: (event) => {
         if (event.type === "turn.started") {
           this.updateStatus(sessionId, "waiting_codex", {});
+        }
+
+        if (event.type === "turn.completed") {
+          didReceiveTurnCompleted = true;
         }
 
         if (
@@ -546,6 +625,17 @@ export class BridgeService {
     } catch (error) {
       if (isCancelledError(error)) {
         return;
+      }
+
+      if (pendingAssistantText) {
+        const assistantEvent = this.store.addEvent({
+          sessionId,
+          source: "codex",
+          eventType: "message.assistant",
+          payload: buildAssistantPayload(job, pendingAssistantText, didReceiveTurnCompleted),
+        });
+        this.bus.publish("message.created", assistantEvent);
+        pendingAssistantText = null;
       }
 
       this.publishError(sessionId, error, "codex");

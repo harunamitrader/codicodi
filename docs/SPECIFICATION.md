@@ -50,6 +50,7 @@ Codex Discord Connected Display は、1つの Codex CLI セッションを
 - Discord 連携
 - 添付ファイル保存
 - ファイル監視
+- 開発者向け raw / formatted log 出力
 
 ### 4.2 ui
 
@@ -63,8 +64,10 @@ Codex Discord Connected Display は、1つの Codex CLI セッションを
 - アクティブセッション表示
 - メッセージ送信
 - 添付ファイル選択
+- drag & drop / paste 添付
 - 進捗表示
 - セッション設定変更
+- 開発者コンソール起動
 
 ### 4.3 src-tauri
 
@@ -78,6 +81,8 @@ Codex Discord Connected Display は、1つの Codex CLI セッションを
 - 起動中スプラッシュ表示
 - 専用ウィンドウでの UI 表示
 - 自分で起動した child bridge の終了処理
+- 起動前の残留 bridge process 整理
+- close 確認ダイアログ
 
 ## 5. 基本概念
 
@@ -121,6 +126,7 @@ Codex Discord Connected Display は、1つの Codex CLI セッションを
 - 名前変更
 - 削除
 - DB からの会話復元
+- stale session の復旧
 - Discord チャンネル紐付け
 
 ### 6.2 入力
@@ -131,6 +137,7 @@ Codex Discord Connected Display は、1つの Codex CLI セッションを
 - Discord からの画像送信
 - ローカル UI からの一般ファイル送信
 - Discord からの一般ファイル送信
+- ローカル UI の drag & drop / paste 添付
 
 ### 6.3 Codex 設定
 
@@ -144,8 +151,10 @@ Codex Discord Connected Display は、1つの Codex CLI セッションを
 - queued / running / waiting_codex / completed / stopped / error
 - 途中 assistant メッセージ
 - 実行コマンド表示
+- キュー待ちターン数表示
 - UI 側の経過表示
 - Discord 側の進捗表示
+- 開発者向け raw / formatted console 表示
 
 ### 6.5 ファイル変更通知
 
@@ -209,6 +218,7 @@ SQLite の保存先:
 - イベント履歴
 - Discord 紐付け情報
 - Codex 状態情報
+- developer console 用ログ
 
 ## 10. 設定
 
@@ -226,6 +236,7 @@ SQLite の保存先:
 - `CODEX_APPROVAL_POLICY`
 - `CODEX_SANDBOX_MODE`
 - `CODEX_BYPASS_APPROVALS_AND_SANDBOX`
+- `CODEX_DEVELOPER_MODE`
 - `DISCORD_BOT_TOKEN`
 - `DISCORD_ALLOWED_GUILD_IDS`
 - `DISCORD_ALLOWED_CHANNEL_IDS`
@@ -257,7 +268,7 @@ SQLite の保存先:
 - ローカルに Node.js が入っている
 - ローカルに Codex CLI が入っている
 
-つまり、完全スタンドアロン配布物ではありません。
+つまり、完全スタンドアロン配布物ではありません。close 時は確認ダイアログを表示し、起動前には残留 bridge process を掃除してから接続を試みます。
 
 ## 13. 現在の制約
 

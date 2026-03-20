@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Codex Discord Connected Display",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "identifier": "io.github.harunamitrader.codicodi",
   "build": {
     "frontendDist": "../ui",
@@ -51,6 +51,11 @@
       ,"../package-lock.json"
       ,"../node_modules"
     ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico"
+      }
+    },
     "targets": "all",
     "icon": [
       "icons/32x32.png",

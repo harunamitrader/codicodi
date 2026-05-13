@@ -1,5 +1,7 @@
 ![Codex Discord Connected Display header](header.jpg)
 
+![CoDiCoDi 概要図](docs/codicodi.png)
+
 # Codex Discord Connected Display
 
 Codex Discord Connected Display は、1つの Codex CLI セッションを
